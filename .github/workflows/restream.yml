@@ -77,15 +77,25 @@ jobs:
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           [ -f "$FONT" ] || { echo "FATAL: font missing at $FONT"; exit 1; }
 
-      - name: Try resolve source HLS
+      - name: Try resolve source
         id: resolve
         run: |
-          hls=$(yt-dlp --impersonate chrome -g --socket-timeout 15 "${{ inputs.source_url }}" 2>/dev/null | tail -1) || true
-          if [ -z "$hls" ]; then
-            echo "live=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "hls=$hls" >> "$GITHUB_OUTPUT"
+          url="${{ inputs.source_url }}"
+          # Check if it's a direct media URL
+          if echo "$url" | grep -qiE '\.(mp4|mkv|avi|mov|webm|m3u8)($|\?)'; then
+            echo "source_type=direct" >> "$GITHUB_OUTPUT"
+            echo "hls=$url" >> "$GITHUB_OUTPUT"
             echo "live=true" >> "$GITHUB_OUTPUT"
+          else
+            hls=$(yt-dlp --impersonate chrome -g --socket-timeout 15 "$url" 2>/dev/null | tail -1) || true
+            if [ -z "$hls" ]; then
+              echo "source_type=offline" >> "$GITHUB_OUTPUT"
+              echo "live=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "source_type=live" >> "$GITHUB_OUTPUT"
+              echo "hls=$hls" >> "$GITHUB_OUTPUT"
+              echo "live=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Prepare fallback assets
@@ -150,7 +160,8 @@ jobs:
               "browser_overlay_url":"${{ inputs.browser_overlay_url }}",
               "fallback_video":"${{ inputs.fallback_video }}",
               "fallback_playlist":"${{ inputs.fallback_playlist }}",
-              "github_token":"${{ inputs.github_token }}"
+              "github_token":"${{ inputs.github_token }}",
+              "preview":"${{ inputs.preview }}"
             }}') &
 
       - name: Fallback restream (preview)
@@ -205,6 +216,7 @@ jobs:
         if: steps.resolve.outputs.live == 'true' && inputs.preview == 'true'
         env:
           OT: ${{ inputs.overlay_text }}
+          SOURCE_TYPE: ${{ steps.resolve.outputs.source_type }}
         run: |
           HLS="${{ steps.resolve.outputs.hls }}"
           PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
@@ -216,18 +228,24 @@ jobs:
           done) &
           BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
           VF="[0:v]$BEVELED[main];[1:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out];[out]split[mainout][snaptmp];[snaptmp]fps=1/5[snap]"
+          if [[ "$SOURCE_TYPE" == "direct" ]]; then
+            INPUT_CMD="ffmpeg -nostdin -re -stream_loop -1 -i \"$HLS\""
+          else
+            INPUT_CMD="ffmpeg -nostdin -re -protocol_whitelist \"$PWL\" -fflags +discardcorrupt -timeout 30000000 -i \"$HLS\""
+          fi
           (while true; do
             if [ -f /tmp/preview_composite.jpg ]; then
               curl -s -X POST -F "frame=@/tmp/preview_composite.jpg" "https://strwithgit.pythonanywhere.com/preview_frame_upload" >/dev/null 2>&1 || true
             fi
             sleep 3
           done) &
-          ffmpeg -nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -i "$HLS" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex "$VF" -map '[mainout]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -f null - -map '[snap]' -f image2 -update 1 -q:v 5 /tmp/preview_composite.jpg
+          $INPUT_CMD -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex "$VF" -map '[mainout]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -f null - -map '[snap]' -f image2 -update 1 -q:v 5 /tmp/preview_composite.jpg
 
       - name: Live restream (live)
         if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
         env:
           OT: ${{ inputs.overlay_text }}
+          SOURCE_TYPE: ${{ steps.resolve.outputs.source_type }}
         run: |
           mkfifo /tmp/chat_overlay.fifo 2>/dev/null || true
           HLS="${{ steps.resolve.outputs.hls }}"
@@ -240,7 +258,11 @@ jobs:
           done) &
           BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
           VF="[0:v]$BEVELED[main];[1:v]format=rgba[ov];[main][ov]overlay=20:main_h-overlay_h-20:format=auto[out]"
-          CMD="ffmpeg -nostdin -re -protocol_whitelist \"$PWL\" -fflags +discardcorrupt -timeout 30000000 -i \"$HLS\" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex \"$VF\" -map '[out]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -pix_fmt yuv420p"
+          if [[ "$SOURCE_TYPE" == "direct" ]]; then
+            CMD="ffmpeg -nostdin -re -stream_loop -1 -i \"$HLS\" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex \"$VF\" -map '[out]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -pix_fmt yuv420p"
+          else
+            CMD="ffmpeg -nostdin -re -protocol_whitelist \"$PWL\" -fflags +discardcorrupt -timeout 30000000 -i \"$HLS\" -f rawvideo -pix_fmt rgba -s 400x600 -r 5 -i /tmp/chat_overlay.fifo -filter_complex \"$VF\" -map '[out]' -map 0:a -c:v libx264 -preset ultrafast -b:v 2000k -c:a aac -b:a 96k -bufsize 4000k -maxrate 2000k -g 60 -pix_fmt yuv420p"
+          fi
           URL="${{ inputs.output_url }}"
           if [[ "$URL" == srt://* ]]; then
             CMD="$CMD -f mpegts \"$URL\""
