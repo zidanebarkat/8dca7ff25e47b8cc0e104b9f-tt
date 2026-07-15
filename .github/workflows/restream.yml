@@ -31,6 +31,14 @@ on:
         description: Browser overlay URL (chat, alerts, etc.)
         required: false
         default: ''
+      cookies_b64:
+        description: Base64-encoded cookies.txt for YouTube sources
+        required: false
+        default: ''
+      source_duration:
+        description: Max seconds per source (0=unlimited)
+        required: false
+        default: '1800'
       github_token:
         description: GitHub PAT for self-trigger
         required: false
