@@ -20,6 +20,10 @@ on:
         description: GitHub PAT for self-trigger
         required: false
         default: ''
+      cookies_b64:
+        description: Base64-encoded YouTube cookies (Netscape format)
+        required: false
+        default: ''
       preview:
         description: Preview mode (no streaming)
         required: false
