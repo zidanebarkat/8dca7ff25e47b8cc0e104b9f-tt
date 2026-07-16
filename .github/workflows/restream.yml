@@ -3,48 +3,25 @@ on:
   workflow_dispatch:
     inputs:
       source_url:
-        description: Source URL
+        description: Source URL (Twitch/YouTube/etc)
         required: true
       output_url:
-        description: Kick RTMP/SRT URL
+        description: TikTok RTMP URL
         required: true
-      fallback_video:
-        description: Fallback Video URL
+      title:
+        description: Stream title
         required: false
-        default: 'https://cdn.pixabay.com/video/2025/10/23/311602_large.mp4'
-      fallback_playlist:
-        description: Fallback Music Playlist
-        required: false
-        default: |-
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/yFLu7P69mDjxhW2aF5MS16GVCqpw4oCqSKw4eSVN.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/Djej42Pty0GrF6VFUNzYPDxsuhCwgWzF9ZHWFsZY.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/3CujPNW3YlSqNkWQSgsgysHBl1YPOXRsqBTX2gh0.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/hMRyjksozJqHXKTqLJLjhV9dVMNMywBPJIGhzEFh.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/Lq2CptklJpFylGJ8xFTGf9Ao6wzrNu6qkZY1wmgb.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/I0x2w0gQdIqJ8WX6qkbn2j7OPWZhJqsncWBvOaf7.mp3
-          https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/wUFY7RnCiQIfvL3FAlyKRifL7wxYF4LN6Trb6aOh.mp3
+        default: 'Live Stream'
       overlay_text:
         description: Overlay text on video
         required: false
         default: ''
-      browser_overlay_url:
-        description: Browser overlay URL (chat, alerts, etc.)
-        required: false
-        default: ''
-      cookies_b64:
-        description: Base64-encoded cookies.txt for YouTube sources
-        required: false
-        default: ''
-      source_duration:
-        description: Max seconds per source (0=unlimited)
-        required: false
-        default: '1800'
       github_token:
         description: GitHub PAT for self-trigger
         required: false
         default: ''
       preview:
-        description: Preview mode (no streaming, saves local file)
+        description: Preview mode (no streaming)
         required: false
         default: 'false'
 
@@ -52,20 +29,8 @@ jobs:
   stream:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    env:
-      PREVIEW: ${{ inputs.preview }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug preview value
-        run: |
-          echo "PREVIEW env = [$PREVIEW]"
-          echo "inputs.preview = [${{ inputs.preview }}]"
-          if [[ "$PREVIEW" == "true" ]]; then
-            echo "PREVIEW is true"
-          else
-            echo "PREVIEW is not true"
-          fi
 
       - name: Cache apt packages
         uses: actions/cache@v4
@@ -98,113 +63,45 @@ jobs:
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           [ -f "$FONT" ] || { echo "FATAL: font missing at $FONT"; exit 1; }
 
-      - name: Try resolve source
+      - name: Resolve source HLS
         id: resolve
         run: |
           url="${{ inputs.source_url }}"
-          # Check if it's a direct media URL
-          if echo "$url" | grep -qiE '\.(mp4|mkv|avi|mov|webm|m3u8)($|\?)'; then
-            echo "source_type=direct" >> "$GITHUB_OUTPUT"
+          if echo "$url" | grep -qiE '\.(m3u8)($|\?)'; then
             echo "hls=$url" >> "$GITHUB_OUTPUT"
             echo "live=true" >> "$GITHUB_OUTPUT"
           else
             hls=$(yt-dlp --impersonate chrome --remote-components ejs:github --extractor-args "youtube:player_client=web" $COOKIES -g --socket-timeout 30 "$url" 2>/tmp/yt_err.txt | tail -1) || true
             cat /tmp/yt_err.txt
             if [ -z "$hls" ]; then
-              echo "=== Not live, downloading video ==="
-              yt-dlp --impersonate chrome --remote-components ejs:github --extractor-args "youtube:player_client=web" $COOKIES \
-                -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
-                --merge-output-format mp4 -o "source_video.mp4" \
-                "$url" 2>&1 || true
-              if [ -f "source_video.mp4" ] && [ -s "source_video.mp4" ]; then
-                echo "source_type=download" >> "$GITHUB_OUTPUT"
-                echo "live=true" >> "$GITHUB_OUTPUT"
-                echo "Downloaded video: $(ls -lh source_video.mp4 | awk '{print $5}')"
-              else
-                echo "source_type=offline" >> "$GITHUB_OUTPUT"
-                echo "live=false" >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "source_type=live" >> "$GITHUB_OUTPUT"
-              echo "hls=$hls" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
+              echo "live=false" >> "$GITHUB_OUTPUT"
+              echo "ERROR: Could not resolve source URL"
+              exit 1
             fi
+            echo "hls=$hls" >> "$GITHUB_OUTPUT"
+            echo "live=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Prepare fallback assets
-        if: steps.resolve.outputs.live != 'true'
-        env:
-          PLAYLIST: ${{ inputs.fallback_playlist }}
-        run: |
-          curl -L -o brb.mp4 "${{ inputs.fallback_video }}"
-          echo "$PLAYLIST" > playlist_urls.txt
-          idx=0
-          while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            idx=$((idx+1))
-            if curl -L -o "track_${idx}.mp3" "$url" 2>/dev/null && [ -s "track_${idx}.mp3" ] && ffprobe -i "track_${idx}.mp3" -show_entries format=duration -v quiet -of csv=p=0 >/dev/null 2>&1; then
-              :
-            else
-              yt-dlp --impersonate chrome -o "track_${idx}.%(ext)s" "$url" 2>/dev/null || true
-            fi
-          done < playlist_urls.txt
-          > concat.txt
-          for rep in $(seq 1 100); do
-            for i in $(seq 1 $idx); do
-              for f in track_$i.*; do
-                [ -f "$f" ] && ffprobe -i "$f" -show_entries format=duration -v quiet -of csv=p=0 >/dev/null 2>&1 && echo "file '$f'" >> concat.txt
-                break
-              done
-            done
-          done
 
       - name: Schedule self-reboot (before 6h limit)
         if: inputs.github_token != '' && inputs.preview != 'true'
         run: |
-          TRIGGER_WORKFLOW() {
-            curl -s -X POST \
-              -H "Authorization: Bearer ${{ inputs.github_token }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/restream.yml/dispatches" \
-              -d '{"ref":"main","inputs":{
-                "source_url":"${{ inputs.source_url }}",
-                "output_url":"${{ inputs.output_url }}",
-                "overlay_text":"${{ inputs.overlay_text }}",
-                "fallback_video":"${{ inputs.fallback_video }}",
-                "fallback_playlist":"${{ inputs.fallback_playlist }}",
-                "cookies_b64":"${{ inputs.cookies_b64 }}",
-                "github_token":"${{ inputs.github_token }}",
-                "source_duration":"${{ inputs.source_duration }}"
-              }}'
-          }
-          (sleep 19800 && for i in 1 2 3; do
-            echo "Self-reboot attempt $i at $(date)..."
-            RESP=$(TRIGGER_WORKFLOW)
-            echo "$RESP"
-            if echo "$RESP" | grep -q '"id"'; then
-              echo "Self-reboot triggered successfully"
-              break
-            fi
-            sleep 30
-          done) &
+          (sleep 21000 && curl -s -X POST \
+            -H "Authorization: Bearer ${{ inputs.github_token }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/restream.yml/dispatches" \
+            -d '{"ref":"main","inputs":{
+              "source_url":"${{ inputs.source_url }}",
+              "output_url":"${{ inputs.output_url }}",
+              "title":"${{ inputs.title }}",
+              "overlay_text":"${{ inputs.overlay_text }}",
+              "github_token":"${{ inputs.github_token }}",
+              "preview":"${{ inputs.preview }}"
+            }}') &
 
-      - name: Fallback restream (live)
-        if: steps.resolve.outputs.live != 'true' && inputs.preview != 'true'
-        run: |
-          URL="${{ inputs.output_url }}"
-          FORMAT="flv"
-          [[ "$URL" == srt://* ]] && FORMAT="mpegts"
-          while true; do
-            ffmpeg -nostdin -re -stream_loop -1 -i brb.mp4 -f concat -safe 0 -i concat.txt -c:v libx264 -preset ultrafast -crf 28 -b:v 1500k -maxrate 1500k -bufsize 3000k -c:a aac -b:a 96k -g 60 -pix_fmt yuv420p -f "$FORMAT" "$URL" || true
-            echo "Restream died, restarting in 10s..."
-            sleep 10
-          done
-
-      - name: Live restream (live)
+      - name: Live restream
         if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
         env:
           OT: ${{ inputs.overlay_text }}
-          SOURCE_TYPE: ${{ steps.resolve.outputs.source_type }}
         run: |
           HLS="${{ steps.resolve.outputs.hls }}"
           PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
@@ -214,21 +111,19 @@ jobs:
             curl -s "https://strwithgit.pythonanywhere.com/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('overlay_text',''))" > overlay.txt
             sleep 10
           done) &
-          if [[ "$SOURCE_TYPE" == "direct" ]]; then
-            INPUT_CMD="ffmpeg -nostdin -re -stream_loop -1 -i \"$HLS\""
-          elif [[ "$SOURCE_TYPE" == "download" ]]; then
-            INPUT_CMD="ffmpeg -nostdin -re -stream_loop -1 -i source_video.mp4"
-          else
-            INPUT_CMD="ffmpeg -nostdin -re -protocol_whitelist \"$PWL\" -fflags +discardcorrupt -timeout 30000000 -i \"$HLS\""
-          fi
+          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
+          VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
           URL="${{ inputs.output_url }}"
           if [[ "$URL" == srt://* ]]; then
             FORMAT="mpegts"
           else
             FORMAT="flv"
           fi
-          while true; do
-            eval "$INPUT_CMD -c:v libx264 -preset ultrafast -crf 28 -b:v 1500k -maxrate 1500k -bufsize 3000k -c:a aac -b:a 96k -g 60 -pix_fmt yuv420p -f \"$FORMAT\" \"$URL\"" || true
-            echo "Restream died, restarting in 10s..."
-            sleep 10
+          ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -c:v libx264 -preset ultrafast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -x264-params "keyint=60:min-keyint=60:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          for attempt in $(seq 1 50); do
+            echo "=== Stream attempt $attempt at $(date) ==="
+            ffmpeg -hide_banner -loglevel warning "${ARGS[@]}" && break
+            EXIT_CODE=$?
+            echo "ffmpeg exited with code $EXIT_CODE, restarting in $((attempt * 2))s..."
+            sleep $((attempt * 2 > 30 ? 30 : attempt * 2))
           done
