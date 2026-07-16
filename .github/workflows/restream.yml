@@ -123,7 +123,7 @@ jobs:
           else
             FORMAT="flv"
           fi
-          ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -c:v libx264 -preset ultrafast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -x264-params "keyint=60:min-keyint=60:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset ultrafast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -x264-params "keyint=60:min-keyint=60:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 128k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           for attempt in $(seq 1 50); do
             echo "=== Stream attempt $attempt at $(date) ==="
             ffmpeg -hide_banner -loglevel warning "${ARGS[@]}" && break
