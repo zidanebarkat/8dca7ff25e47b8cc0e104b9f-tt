@@ -1042,6 +1042,32 @@ def fma_parse():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
 
+@app.route('/push_overlay', methods=['POST'])
+def push_overlay_to_repo():
+    data = request.get_json(force=True)
+    text = data.get('overlay_text', '')
+    cfg = load_config()
+    token = cfg.get('github_token') or GITHUB_TOKEN
+    owner = cfg.get('github_owner') or GITHUB_OWNER
+    repo = cfg.get('github_repo') or GITHUB_REPO
+    if not token or not owner or not repo:
+        return jsonify({'ok': False, 'error': 'Missing GitHub config'})
+    headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github.v3+json'}
+    api_url = f'https://api.github.com/repos/{owner}/{repo}/contents/overlay_state.txt'
+    import base64 as b64mod
+    content_b64 = b64mod.b64encode(text.encode()).decode()
+    existing = requests.get(api_url, headers=headers)
+    if existing.status_code == 200:
+        sha = existing.json().get('sha', '')
+        payload = {'message': 'Update overlay', 'content': content_b64, 'sha': sha}
+    else:
+        payload = {'message': 'Create overlay', 'content': content_b64}
+    r = requests.put(api_url, json=payload, headers=headers)
+    if r.status_code in (200, 201):
+        log(f'Overlay pushed to repo: "{text}"')
+        return jsonify({'ok': True})
+    return jsonify({'ok': False, 'error': f'GitHub API {r.status_code}'})
+
 @app.route('/tiktok/push_key', methods=['POST'])
 def tt_push_key():
     data = request.get_json(force=True)
@@ -1265,7 +1291,14 @@ function stopStream() {
   }).catch(e=>addLog('Stop failed','err'));
 }
 function pushOverlay() {
-  saveConfig(() => addLog('Overlay pushed','ok'));
+  var text = document.getElementById('overlay_text') ? document.getElementById('overlay_text').value : '';
+  saveConfig(() => {
+    fetch('/push_overlay', {method:'POST', body:JSON.stringify({overlay_text: text}), headers:{'Content-Type':'application/json'}})
+      .then(r=>r.json()).then(d=>{
+        if(d.ok) addLog('Overlay pushed to stream (no restart)','ok');
+        else addLog('Overlay push failed: '+d.error,'err');
+      }).catch(e=>addLog('Overlay push failed','err'));
+  });
 }
 function addLog(msg,cls='info') {
   const box = document.getElementById('logBox');
@@ -1536,7 +1569,14 @@ function stopStream() {
   }).catch(e=>addLog('Stop failed','err'));
 }
 function pushOverlay() {
-  saveConfig(() => addLog('Overlay pushed','ok'));
+  var text = document.getElementById('overlay_text') ? document.getElementById('overlay_text').value : '';
+  saveConfig(() => {
+    fetch('/push_overlay', {method:'POST', body:JSON.stringify({overlay_text: text}), headers:{'Content-Type':'application/json'}})
+      .then(r=>r.json()).then(d=>{
+        if(d.ok) addLog('Overlay pushed to stream (no restart)','ok');
+        else addLog('Overlay push failed: '+d.error,'err');
+      }).catch(e=>addLog('Overlay push failed','err'));
+  });
 }
 function fetchFMAtracks() {
   const url = document.getElementById('fmaUrl').value.trim();
@@ -1781,7 +1821,14 @@ function stopStream() {
   }).catch(e=>addLog('Stop failed','err'));
 }
 function pushOverlay() {
-  saveConfig(() => addLog('Overlay pushed','ok'));
+  var text = document.getElementById('overlay_text') ? document.getElementById('overlay_text').value : '';
+  saveConfig(() => {
+    fetch('/push_overlay', {method:'POST', body:JSON.stringify({overlay_text: text}), headers:{'Content-Type':'application/json'}})
+      .then(r=>r.json()).then(d=>{
+        if(d.ok) addLog('Overlay pushed to stream (no restart)','ok');
+        else addLog('Overlay push failed: '+d.error,'err');
+      }).catch(e=>addLog('Overlay push failed','err'));
+  });
 }
 function addLog(msg,cls='info') {
   const box = document.getElementById('logBox');
@@ -2039,7 +2086,14 @@ function stopStream() {
   }).catch(e=>addLog('Stop failed','err'));
 }
 function pushOverlay() {
-  saveConfig(() => addLog('Overlay pushed','ok'));
+  var text = document.getElementById('overlay_text') ? document.getElementById('overlay_text').value : '';
+  saveConfig(() => {
+    fetch('/push_overlay', {method:'POST', body:JSON.stringify({overlay_text: text}), headers:{'Content-Type':'application/json'}})
+      .then(r=>r.json()).then(d=>{
+        if(d.ok) addLog('Overlay pushed to stream (no restart)','ok');
+        else addLog('Overlay push failed: '+d.error,'err');
+      }).catch(e=>addLog('Overlay push failed','err'));
+  });
 }
 function fetchFMAtracks() {
   const url = document.getElementById('fmaUrl').value.trim();
@@ -2283,7 +2337,14 @@ function stopStream() {
   }).catch(e=>addLog('Stop failed','err'));
 }
 function pushOverlay() {
-  saveConfig(() => addLog('Overlay pushed','ok'));
+  var text = document.getElementById('overlay_text') ? document.getElementById('overlay_text').value : '';
+  saveConfig(() => {
+    fetch('/push_overlay', {method:'POST', body:JSON.stringify({overlay_text: text}), headers:{'Content-Type':'application/json'}})
+      .then(r=>r.json()).then(d=>{
+        if(d.ok) addLog('Overlay pushed to stream (no restart)','ok');
+        else addLog('Overlay push failed: '+d.error,'err');
+      }).catch(e=>addLog('Overlay push failed','err'));
+  });
 }
 function fetchFMAtracks() {
   const url = document.getElementById('fmaUrl').value.trim();
