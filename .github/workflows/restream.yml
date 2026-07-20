@@ -75,15 +75,28 @@ jobs:
             echo "hls=$url" >> "$GITHUB_OUTPUT"
             echo "live=true" >> "$GITHUB_OUTPUT"
           else
-            hls=$(yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES -f "best[height<=1080]/best" -g --socket-timeout 30 "$url" 2>/tmp/yt_err.txt | tail -1) || true
+            urls=$(yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES -f "bestvideo[height<=1080]+bestaudio/best" -g --socket-timeout 30 "$url" 2>/tmp/yt_err.txt) || true
             cat /tmp/yt_err.txt
-            if [ -z "$hls" ]; then
+            count=$(echo "$urls" | grep -c '^https' || true)
+            if [ "$count" -ge 2 ]; then
+              video_url=$(echo "$urls" | head -1)
+              audio_url=$(echo "$urls" | tail -1)
+              echo "video_url=$video_url" >> "$GITHUB_OUTPUT"
+              echo "audio_url=$audio_url" >> "$GITHUB_OUTPUT"
+              echo "multi=true" >> "$GITHUB_OUTPUT"
+              echo "hls=$video_url" >> "$GITHUB_OUTPUT"
+              echo "live=true" >> "$GITHUB_OUTPUT"
+              echo "Resolved: video + audio (2 streams)"
+            elif [ "$count" -eq 1 ]; then
+              echo "hls=$urls" >> "$GITHUB_OUTPUT"
+              echo "multi=false" >> "$GITHUB_OUTPUT"
+              echo "live=true" >> "$GITHUB_OUTPUT"
+              echo "Resolved: single stream"
+            else
               echo "live=false" >> "$GITHUB_OUTPUT"
               echo "ERROR: Could not resolve source URL"
               exit 1
             fi
-            echo "hls=$hls" >> "$GITHUB_OUTPUT"
-            echo "live=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Schedule self-reboot (before 6h limit)
@@ -107,6 +120,9 @@ jobs:
         if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
         env:
           OT: ${{ inputs.overlay_text }}
+          MULTI: ${{ steps.resolve.outputs.multi }}
+          VIDEO_URL: ${{ steps.resolve.outputs.video_url }}
+          AUDIO_URL: ${{ steps.resolve.outputs.audio_url }}
         run: |
           HLS="${{ steps.resolve.outputs.hls }}"
           PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
@@ -120,14 +136,19 @@ jobs:
             sleep 10
           done) &
           BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
-          VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
           URL="${{ inputs.output_url }}"
           if [[ "$URL" == srt://* ]]; then
             FORMAT="mpegts"
           else
             FORMAT="flv"
           fi
-          ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          if [ "$MULTI" = "true" ]; then
+            VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
+            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$VIDEO_URL" -thread_queue_size 1024 -i "$AUDIO_URL" -filter_complex "$VF" -map '[out]' -map 1:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          else
+            VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
+            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          fi
           for attempt in $(seq 1 50); do
             echo "=== Stream attempt $attempt at $(date) ==="
             ffmpeg -hide_banner -loglevel warning "${ARGS[@]}" && break
