@@ -133,9 +133,9 @@ jobs:
             FORMAT="flv"
           fi
           if [ "$MULTI" = "true" ]; then
-            ARGS=(-nostdin -re -stream_loop -1 -thread_queue_size 1024 -i "$VIDEO_URL" -stream_loop -1 -thread_queue_size 1024 -i "$AUDIO_URL" -map 0:v -map 1:a -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            ARGS=(-nostdin -stream_loop -1 -thread_queue_size 1024 -i "$VIDEO_URL" -stream_loop -1 -thread_queue_size 1024 -i "$AUDIO_URL" -map 0:v -map 1:a -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           else
-            ARGS=(-nostdin -re -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            ARGS=(-nostdin -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           fi
           while true; do
             echo "=== Stream started at $(date) ==="
