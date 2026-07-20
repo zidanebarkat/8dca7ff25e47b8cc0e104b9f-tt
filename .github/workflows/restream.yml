@@ -144,15 +144,15 @@ jobs:
           fi
           if [ "$MULTI" = "true" ]; then
             VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
-            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$VIDEO_URL" -thread_queue_size 1024 -i "$AUDIO_URL" -filter_complex "$VF" -map '[out]' -map 1:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            ARGS=(-nostdin -re -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$VIDEO_URL" -stream_loop -1 -thread_queue_size 1024 -i "$AUDIO_URL" -filter_complex "$VF" -map '[out]' -map 1:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           else
             VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
-            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            ARGS=(-nostdin -re -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           fi
-          for attempt in $(seq 1 50); do
-            echo "=== Stream attempt $attempt at $(date) ==="
-            ffmpeg -hide_banner -loglevel warning "${ARGS[@]}" && break
+          while true; do
+            echo "=== Stream started at $(date) ==="
+            ffmpeg -hide_banner -loglevel warning "${ARGS[@]}"
             EXIT_CODE=$?
-            echo "ffmpeg exited with code $EXIT_CODE, restarting in $((attempt * 2))s..."
-            sleep $((attempt * 2 > 30 ? 30 : attempt * 2))
+            echo "ffmpeg exited with code $EXIT_CODE, restarting in 5s..."
+            sleep 5
           done
