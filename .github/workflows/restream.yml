@@ -67,36 +67,37 @@ jobs:
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           [ -f "$FONT" ] || { echo "FATAL: font missing at $FONT"; exit 1; }
 
-      - name: Resolve source HLS
-        id: resolve
+      - name: Download source
+        id: download
         run: |
           url="${{ inputs.source_url }}"
           if echo "$url" | grep -qiE '\.(m3u8)($|\?)'; then
-            echo "hls=$url" >> "$GITHUB_OUTPUT"
-            echo "live=true" >> "$GITHUB_OUTPUT"
+            echo "type=hls" >> "$GITHUB_OUTPUT"
+            echo "input=$url" >> "$GITHUB_OUTPUT"
+            echo "Resolved: HLS direct stream"
           else
-            urls=$(yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES -f "bestvideo[height<=1080]+bestaudio/best" -g --socket-timeout 30 "$url" 2>/tmp/yt_err.txt) || true
-            cat /tmp/yt_err.txt
-            count=$(echo "$urls" | grep -c '^https' || true)
-            if [ "$count" -ge 2 ]; then
-              video_url=$(echo "$urls" | head -1)
-              audio_url=$(echo "$urls" | tail -1)
-              echo "video_url=$video_url" >> "$GITHUB_OUTPUT"
-              echo "audio_url=$audio_url" >> "$GITHUB_OUTPUT"
-              echo "multi=true" >> "$GITHUB_OUTPUT"
-              echo "hls=$video_url" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
-              echo "Resolved: video + audio (2 streams)"
-            elif [ "$count" -eq 1 ]; then
-              echo "hls=$urls" >> "$GITHUB_OUTPUT"
-              echo "multi=false" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
-              echo "Resolved: single stream"
-            else
-              echo "live=false" >> "$GITHUB_OUTPUT"
-              echo "ERROR: Could not resolve source URL"
+            echo "Downloading from YouTube with yt-dlp..."
+            yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES \
+              -f "bestvideo[height<=1080]+bestaudio/best" \
+              --merge-output-format mp4 \
+              -o "/tmp/source.%(ext)s" \
+              --no-part \
+              --socket-timeout 30 \
+              "$url" 2>&1 | tail -20
+            EXIT=$?
+            if [ $EXIT -ne 0 ]; then
+              echo "yt-dlp exit code: $EXIT"
+            fi
+            ls -lh /tmp/source.* 2>/dev/null || true
+            FILE=$(ls /tmp/source.mp4 /tmp/source.webm /tmp/source.mkv 2>/dev/null | head -1)
+            if [ -z "$FILE" ]; then
+              echo "FATAL: No downloaded file found"
+              ls -la /tmp/source* 2>/dev/null || true
               exit 1
             fi
+            echo "type=file" >> "$GITHUB_OUTPUT"
+            echo "input=$FILE" >> "$GITHUB_OUTPUT"
+            echo "Downloaded: $FILE ($(du -h "$FILE" | cut -f1))"
           fi
 
       - name: Schedule self-reboot (before 6h limit)
@@ -117,43 +118,27 @@ jobs:
             }}') &
 
       - name: Live restream
-        if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
+        if: steps.download.outputs.type != '' && inputs.preview != 'true'
         env:
-          OT: ${{ inputs.overlay_text }}
-          MULTI: ${{ steps.resolve.outputs.multi }}
-          VIDEO_URL: ${{ steps.resolve.outputs.video_url }}
-          AUDIO_URL: ${{ steps.resolve.outputs.audio_url }}
+          INPUT_TYPE: ${{ steps.download.outputs.type }}
+          INPUT_FILE: ${{ steps.download.outputs.input }}
         run: |
-          HLS="${{ steps.resolve.outputs.hls }}"
-          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
-          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          echo "$OT" > overlay.txt
-          (while true; do
-            OVERLAY=$(curl -s -H "Authorization: Bearer ${{ inputs.github_token }}" \
-              "https://api.github.com/repos/${{ github.repository }}/contents/overlay_state.txt" 2>/dev/null \
-              | python3 -c "import sys,json,base64; d=json.load(sys.stdin); print(base64.b64decode(d.get('content','')).decode().strip() if 'content' in d else '')" 2>/dev/null || true)
-            echo "$OVERLAY" > overlay.txt
-            sleep 10
-          done) &
-          BEVELED="drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x1a0b2e:x=(w-text_w)/2+5:y=(h-text_h)/2+5,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x3a1f5e:x=(w-text_w)/2+3:y=(h-text_h)/2+3,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0x6b3f96:x=(w-text_w)/2+1:y=(h-text_h)/2+1,drawtext=textfile=overlay.txt:reload=1:fontfile=$FONT:fontsize=h*0.05:fontcolor=0xC9A2FF:box=1:boxcolor=0x0a0512@0.6:boxborderw=26:bordercolor=0x1a0b2e:borderw=2:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx=6:shadowy=6"
           URL="${{ inputs.output_url }}"
           if [[ "$URL" == srt://* ]]; then
             FORMAT="mpegts"
           else
             FORMAT="flv"
           fi
-          HDRS="-headers User-Agent:\ Mozilla/5.0\ (Windows\ NT\ 10.0;\ Win64;\ x64)\ AppleWebKit/537.36\ (KHTML,\ like\ Gecko)\ Chrome/137.0.0.0\ Safari/537.36"
-          if [ "$MULTI" = "true" ]; then
-            VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
-            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 $HDRS -i "$VIDEO_URL" -thread_queue_size 1024 $HDRS -i "$AUDIO_URL" -filter_complex "$VF" -map '[out]' -map 1:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          if [ "$INPUT_TYPE" = "hls" ]; then
+            PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
+            ARGS=(-nostdin -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$INPUT_FILE" -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           else
-            VF="[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,$BEVELED[main];[main]format=yuv420p[out]"
-            ARGS=(-nostdin -re -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 $HDRS -i "$HLS" -filter_complex "$VF" -map '[out]' -map 0:a -c:v libx264 -preset fast -r 60 -b:v 12000k -maxrate 12000k -bufsize 24000k -g 120 -x264-params "keyint=120:min-keyint=120:level=5.1" -pix_fmt yuv420p -c:a aac -b:a 192k -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            ARGS=(-nostdin -stream_loop -1 -re -i "$INPUT_FILE" -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
           fi
-          for attempt in $(seq 1 50); do
-            echo "=== Stream attempt $attempt at $(date) ==="
-            ffmpeg -hide_banner -loglevel warning "${ARGS[@]}" && break
+          while true; do
+            echo "=== Stream started at $(date) ==="
+            ffmpeg -hide_banner "${ARGS[@]}"
             EXIT_CODE=$?
-            echo "ffmpeg exited with code $EXIT_CODE, restarting in $((attempt * 2))s..."
-            sleep $((attempt * 2 > 30 ? 30 : attempt * 2))
+            echo "ffmpeg exited with code $EXIT_CODE, restarting in 5s..."
+            sleep 5
           done
