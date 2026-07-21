@@ -111,8 +111,7 @@ jobs:
             while true; do
               echo "=== YouTube pipe stream started at $(date) ==="
               yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES \
-                -f "bestvideo[height<=1080]+bestaudio/best" \
-                --merge-output-format mp4 \
+                -f "best[height<=1080]/best" \
                 --socket-timeout 30 \
                 -o - \
                 "$SOURCE" 2>/tmp/yt_err.txt | \
