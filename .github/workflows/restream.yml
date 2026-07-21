@@ -48,8 +48,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends ffmpeg build-essential libssl-dev fonts-dejavu-core curl unzip
           pip install -q yt-dlp curl_cffi websocket-client pillow
-          curl -fsSL https://deno.land/install.sh | sh || true
-          echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
       - name: Setup cookies
         run: |
@@ -66,38 +64,6 @@ jobs:
         run: |
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           [ -f "$FONT" ] || { echo "FATAL: font missing at $FONT"; exit 1; }
-
-      - name: Resolve source HLS
-        id: resolve
-        run: |
-          url="${{ inputs.source_url }}"
-          if echo "$url" | grep -qiE '\.(m3u8)($|\?)'; then
-            echo "hls=$url" >> "$GITHUB_OUTPUT"
-            echo "live=true" >> "$GITHUB_OUTPUT"
-          else
-            urls=$(yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES -f "bestvideo[height<=1080]+bestaudio/best" -g --socket-timeout 30 "$url" 2>/tmp/yt_err.txt) || true
-            cat /tmp/yt_err.txt
-            count=$(echo "$urls" | grep -c '^https' || true)
-            if [ "$count" -ge 2 ]; then
-              video_url=$(echo "$urls" | head -1)
-              audio_url=$(echo "$urls" | tail -1)
-              echo "video_url=$video_url" >> "$GITHUB_OUTPUT"
-              echo "audio_url=$audio_url" >> "$GITHUB_OUTPUT"
-              echo "multi=true" >> "$GITHUB_OUTPUT"
-              echo "hls=$video_url" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
-              echo "Resolved: video + audio (2 streams)"
-            elif [ "$count" -eq 1 ]; then
-              echo "hls=$urls" >> "$GITHUB_OUTPUT"
-              echo "multi=false" >> "$GITHUB_OUTPUT"
-              echo "live=true" >> "$GITHUB_OUTPUT"
-              echo "Resolved: single stream"
-            else
-              echo "live=false" >> "$GITHUB_OUTPUT"
-              echo "ERROR: Could not resolve source URL"
-              exit 1
-            fi
-          fi
 
       - name: Schedule self-reboot (before 6h limit)
         if: inputs.github_token != '' && inputs.preview != 'true'
@@ -117,33 +83,49 @@ jobs:
             }}') &
 
       - name: Live restream
-        if: steps.resolve.outputs.live == 'true' && inputs.preview != 'true'
-        env:
-          OT: ${{ inputs.overlay_text }}
-          MULTI: ${{ steps.resolve.outputs.multi }}
-          VIDEO_URL: ${{ steps.resolve.outputs.video_url }}
-          AUDIO_URL: ${{ steps.resolve.outputs.audio_url }}
+        if: inputs.preview != 'true'
         run: |
-          HLS="${{ steps.resolve.outputs.hls }}"
-          PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
           URL="${{ inputs.output_url }}"
+          SOURCE="${{ inputs.source_url }}"
           if [[ "$URL" == srt://* ]]; then
             FORMAT="mpegts"
           else
             FORMAT="flv"
           fi
-          if [ "$MULTI" = "true" ]; then
-            UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            REF="https://www.youtube.com/"
-            HDRS="User-Agent: ${UA}\r\nReferer: ${REF}\r\n"
-            ARGS=(-nostdin -headers "$HDRS" -stream_loop -1 -thread_queue_size 1024 -i "$VIDEO_URL" -stream_loop -1 -thread_queue_size 1024 -i "$AUDIO_URL" -map 0:v -map 1:a -c:v libx264 -preset ultrafast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+          if echo "$SOURCE" | grep -qiE '\.(m3u8)($|\?)'; then
+            PWL="file,http,https,tcp,tls,crypto,srt,rtmp,rtmps"
+            while true; do
+              echo "=== HLS stream started at $(date) ==="
+              ffmpeg -hide_banner -stream_loop -1 -protocol_whitelist "$PWL" \
+                -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 \
+                -i "$SOURCE" \
+                -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k \
+                -g 60 -pix_fmt yuv420p \
+                -c:a aac -b:a 192k -ar 44100 \
+                -flush_packets 1 -max_muxing_queue_size 9999 \
+                -f "$FORMAT" "$URL"
+              echo "ffmpeg exited with code $?, restarting in 5s..."
+              sleep 5
+            done
           else
-            ARGS=(-nostdin -stream_loop -1 -protocol_whitelist "$PWL" -fflags +discardcorrupt -timeout 30000000 -thread_queue_size 1024 -i "$HLS" -c:v libx264 -preset ultrafast -r 30 -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -flush_packets 1 -max_muxing_queue_size 9999 -f "$FORMAT" "$URL")
+            while true; do
+              echo "=== YouTube pipe stream started at $(date) ==="
+              yt-dlp --impersonate chrome --remote-components ejs:github $COOKIES \
+                -f "bestvideo[height<=1080]+bestaudio/best" \
+                --merge-output-format mp4 \
+                --socket-timeout 30 \
+                -o - \
+                "$SOURCE" 2>/tmp/yt_err.txt | \
+              ffmpeg -hide_banner -i pipe:0 \
+                -c:v libx264 -preset fast -r 30 -b:v 6000k -maxrate 6000k -bufsize 12000k \
+                -g 60 -pix_fmt yuv420p \
+                -c:a aac -b:a 192k -ar 44100 \
+                -flush_packets 1 -max_muxing_queue_size 9999 \
+                -f "$FORMAT" "$URL"
+              EXIT_CODE=${PIPESTATUS[0]}
+              echo "yt-dlp exit: $EXIT_CODE, ffmpeg exit: $PIPESTATUS[1]"
+              cat /tmp/yt_err.txt
+              echo "Restarting in 5s..."
+              sleep 5
+            done
           fi
-          while true; do
-            echo "=== Stream started at $(date) ==="
-            ffmpeg -hide_banner "${ARGS[@]}"
-            EXIT_CODE=$?
-            echo "ffmpeg exited with code $EXIT_CODE, restarting in 5s..."
-            sleep 5
-          done
